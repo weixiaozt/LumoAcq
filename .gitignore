@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyw~
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# PyInstaller
+*.spec.bak
+build.bat.bak
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+*.tox
+
+# IDEs
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Acquired images & output (potentially large)
+images/
+logs/
+tmp/
+测试图像/
+
+# User presets (machine-specific)
+presets/*.json
+
+# Thumbnails / OS metadata
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Claude project memory (local session data)
+.claude/
