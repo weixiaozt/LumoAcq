@@ -960,17 +960,31 @@ class MainWindow(QMainWindow):
     def _scan_all_roles() -> list[DeviceEntry]:
         entries: list[DeviceEntry] = []
 
-        # 真机: 枚举可能触发 SDK; 失败只记日志不挂整个扫描
+        # 大恒: 枚举可能触发 SDK; 失败只记日志不挂整个扫描
         try:
             from acquire_app.camera.daheng import DahengCamera
             for info in DahengCamera.scan():
+                ip = f"  {info.ip}" if info.ip else ""
                 entries.append(DeviceEntry(
                     role="daheng",
                     index=info.index,
-                    display=f"[真机] {info.model}  SN:{info.serial}  {info.ip}",
+                    display=f"[大恒] {info.model}  SN:{info.serial}{ip}",
                 ))
         except Exception as e:
             logger.warning(f"daheng 扫描失败: {e}")
+
+        # 海康 MVS (USB3V + GigE 一把枚举)
+        try:
+            from acquire_app.camera.hikvision import HikvisionCamera
+            for info in HikvisionCamera.scan():
+                ip = f"  {info.ip}" if info.ip else ""
+                entries.append(DeviceEntry(
+                    role="hikvision",
+                    index=info.index,
+                    display=f"[海康] {info.model}  SN:{info.serial}{ip}",
+                ))
+        except Exception as e:
+            logger.warning(f"hikvision 扫描失败: {e}")
 
         # Dummy 始终可用, 便于离线开发
         try:

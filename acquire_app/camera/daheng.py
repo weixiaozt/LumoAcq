@@ -10,7 +10,13 @@ from typing import Optional
 
 import numpy as np
 
-from acquire_app.camera.base import CameraBase, CameraInfo, Frame
+from acquire_app.camera.base import (
+    CameraBase,
+    CameraBusyError,
+    CameraConnectError,
+    CameraInfo,
+    Frame,
+)
 from acquire_app.logger import logger
 
 
@@ -74,14 +80,6 @@ else:
         _GX_AVAILABLE = False
         _GX_IMPORT_ERROR = _e
         logger.warning(f"gxipy 导入失败: {_e}")
-
-
-class CameraBusyError(RuntimeError):
-    """相机已被其他进程占用。"""
-
-
-class CameraConnectError(RuntimeError):
-    """相机连接失败 (网络/设备不可达等)。"""
 
 
 def _translate_connect_error(exc: BaseException) -> RuntimeError:

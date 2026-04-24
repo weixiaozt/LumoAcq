@@ -11,7 +11,7 @@ from acquire_app.gui.widgets.status_dot import StatusDot
 
 @dataclass
 class DeviceEntry:
-    role: str            # "daheng" | "dummy"
+    role: str            # "daheng" | "hikvision" | "dummy"
     index: int
     display: str         # 下拉显示文案
 

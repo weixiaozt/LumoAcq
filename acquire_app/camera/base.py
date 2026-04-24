@@ -38,6 +38,14 @@ class Frame:
         return self.image.shape[1]
 
 
+class CameraBusyError(RuntimeError):
+    """相机已被其他进程占用。"""
+
+
+class CameraConnectError(RuntimeError):
+    """相机连接失败 (网络/设备不可达等)。"""
+
+
 class CameraBase(ABC):
     """所有相机实现的抽象基类."""
 
@@ -186,6 +194,19 @@ class CameraBase(ABC):
     def get_current_frame_rate_hz(self) -> Optional[float]:
         """当前实际采集速率 (受曝光/读出/带宽限制)。不支持返回 None。"""
         return None
+
+    # ── 传感器模式 (海康等相机的 SensorMode 节点, 不支持时返回 None) ──
+
+    def list_sensor_modes(self) -> Optional[list[str]]:
+        """返回支持的传感器模式 (如 '高灵敏度' / '高速度'). None = 不支持。"""
+        return None
+
+    def get_sensor_mode(self) -> Optional[str]:
+        """当前传感器模式. None = 不支持或未知。"""
+        return None
+
+    def set_sensor_mode(self, mode: str) -> None:
+        raise NotImplementedError("该相机未实现 set_sensor_mode")
 
     # ── 便利方法 ──────────────────────────────────────────────────────────────
 
