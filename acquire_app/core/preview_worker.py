@@ -16,6 +16,24 @@ from acquire_app.config import PREVIEW_FPS
 from acquire_app.logger import logger
 
 
+# 预览图降采样阈值. 像素总数 > 阈值 → worker 线程整数抽样缩小后再 emit,
+# 避免 12MP+ 大传感器把 24MB/帧 × 30Hz 的数据塞进 Qt 信号队列压垮 UI.
+# 采集/保存路径不走预览, 仍用相机原始分辨率, 不受影响.
+#   • Daheng SWIR 5.3 MP (2592×2056) → 不触发 (显示原分辨率)
+#   • Hikvision MV-CT120G 12.3 MP (4096×3000) → 触发, 抽样到约 2048×1500
+_PREVIEW_MAX_PIXELS = 6_000_000
+
+
+def _downsample_for_preview(img: np.ndarray) -> np.ndarray:
+    h, w = img.shape[:2]
+    if h * w <= _PREVIEW_MAX_PIXELS:
+        return img
+    import math
+    step = max(2, math.ceil(math.sqrt(h * w / _PREVIEW_MAX_PIXELS)))
+    # .copy() 让原始大图可以被 GC, 否则 view 持有整块内存
+    return img[::step, ::step].copy()
+
+
 class PreviewWorker(QObject):
     frame_ready = Signal(np.ndarray, int)  # (image, frame_id)
     capture_fps_measured = Signal(float)   # 基于 frame_id + 时间戳实测的相机产帧率
@@ -50,6 +68,8 @@ class PreviewWorker(QObject):
         time.sleep(0.1)
 
         next_deadline = time.monotonic()
+        # 连续错误计数 + 自动恢复: USB/网络抖动 → CALLORDER 等非致命错, 重启 stream 续跑
+        consecutive_errors = 0
         while self._running:
             if self._paused:
                 time.sleep(0.02)
@@ -63,29 +83,42 @@ class PreviewWorker(QObject):
             # - free: 相机连续出帧, 正常 grab
             # - software: 不发软触发; grab 会超时 (直到有 CaptureWorker 发触发)
             # - hardware: grab 等外部触发来; 没信号就持续超时
+            # 超时放宽到 1000ms (官方 sample 用值). 300ms 曝光 + 300ms 超时会在
+            # 帧到达边界上 race, MVS SDK 偶发返回 CALLORDER 而不是 NODATA.
             try:
-                frame = self._cam.grab_one(timeout_ms=300)
+                frame = self._cam.grab_one(timeout_ms=1000)
+                consecutive_errors = 0
             except TimeoutError:
                 continue
             except Exception as e:
                 if not self._running:
                     break
-                # 切 PixelFormat / Binning / 主动 stop_stream 会让 SDK 短暂抛这类错
+                consecutive_errors += 1
                 msg = str(e)
-                transient_markers = (
-                    "NewBufferEvent", "don't", "stream", "acquisition",
-                )
-                if any(m in msg for m in transient_markers) or \
-                   any(m in msg.lower() for m in ("don't", "stream", "acquisition")):
-                    time.sleep(0.05)
-                    continue
-                logger.warning(f"预览 grab 异常: {e}")
-                self.error.emit(str(e))
-                break
+                logger.warning(f"预览 grab 异常 (#{consecutive_errors}): {e}")
+
+                # 策略: 前 10 次非致命错只 sleep 重试; 第 3 次起尝试重启 stream 恢复;
+                # 超过 30 次仍失败才放弃.
+                if consecutive_errors >= 3 and consecutive_errors % 3 == 0:
+                    try:
+                        logger.info("预览尝试重启 stream 恢复")
+                        self._cam.stop_stream()
+                        time.sleep(0.1)
+                        self._cam.start_stream()
+                        time.sleep(0.1)
+                    except Exception as re:
+                        logger.warning(f"重启 stream 失败: {re}")
+
+                if consecutive_errors >= 30:
+                    self.error.emit(f"预览连续 {consecutive_errors} 次失败: {msg}")
+                    break
+                time.sleep(0.05)
+                continue
 
             next_deadline = time.monotonic() + self._interval
+            img = _downsample_for_preview(frame.image)
             try:
-                self.frame_ready.emit(frame.image, frame.frame_id)
+                self.frame_ready.emit(img, frame.frame_id)
             except Exception as e:
                 logger.warning(f"预览 emit 失败: {e}")
 

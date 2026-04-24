@@ -56,6 +56,14 @@ def _fmt_int(v: float) -> str:
     return str(n)
 
 
+def _floor_to_decimals(value: float, decimals: int) -> float:
+    """把 value 向下取整到指定小数位. 避免 spinner 最大值因四舍五入越界.
+    例如 11.9906 @ 1 位小数 -> 11.9 (不是 12.0)."""
+    import math
+    factor = 10 ** decimals
+    return math.floor(value * factor) / factor
+
+
 def _fmt_duration_us(us: float) -> str:
     """把微秒换算成带单位的友好字符串: 21 → '21 μs'; 1_000_000 → '1 s'; 15000 → '15 ms'"""
     u = float(us)
@@ -119,6 +127,14 @@ class ParamPanel(Card):
             "硬触发: 等外部信号, 适合和频闪光源同步"
         )
 
+        # 传感器模式 (海康等相机的 SensorMode 节点, 不支持时整行隐藏)
+        self._sensor_mode = QComboBox()
+        self._sensor_mode.setToolTip(
+            "传感器模式: 海康相机支持在\n"
+            "  高灵敏度 / 高速度 / HDR 等模式之间切换"
+        )
+        self._sensor_mode_label = QLabel("传感器模式")
+
         self._temperature = QLabel("—")
         self._temperature.setProperty("mono", True)
         self._temperature.setProperty("muted", True)
@@ -134,6 +150,10 @@ class ParamPanel(Card):
         form.addRow(self._fps_label, self._fps)
         form.addRow(self._binning_label, self._binning)
         form.addRow(QLabel("触发模式"), self._trigger)
+        form.addRow(self._sensor_mode_label, self._sensor_mode)
+        # 默认隐藏传感器模式行, 连上支持的相机再亮出来
+        self._sensor_mode_label.setVisible(False)
+        self._sensor_mode.setVisible(False)
         form.addRow(QLabel("温度"), self._temperature)
 
         self.add_layout(form)
@@ -179,6 +199,7 @@ class ParamPanel(Card):
         self._pixel.currentTextChanged.connect(self._push_pixel_format)
         self._binning.valueChanged.connect(self._push_binning)
         self._trigger.currentIndexChanged.connect(self._push_trigger_mode)
+        self._sensor_mode.currentTextChanged.connect(self._push_sensor_mode)
 
     # ── 对外 ──
 
@@ -215,7 +236,8 @@ class ParamPanel(Card):
             try:
                 rng = cam.get_exposure_range()
                 if rng is not None:
-                    self._exposure.setRange(rng[0], rng[1])
+                    exp_max = _floor_to_decimals(rng[1], self._exposure.decimals())
+                    self._exposure.setRange(rng[0], exp_max)
                     self._exposure_label.setText(
                         f"曝光  <span style='color:{theme.TEXT_DIM}'>"
                         f"{_fmt_duration_us(rng[0])}~{_fmt_duration_us(rng[1])}</span>"
@@ -232,10 +254,12 @@ class ParamPanel(Card):
             try:
                 rng = cam.get_gain_range()
                 if rng is not None:
-                    self._gain.setRange(rng[0], rng[1])
+                    # 向下取整到 spinner 精度, 避免把 11.9906 四舍五入成 12.0 越界
+                    gain_max = _floor_to_decimals(rng[1], self._gain.decimals())
+                    self._gain.setRange(rng[0], gain_max)
                     self._gain_label.setText(
                         f"增益  <span style='color:{theme.TEXT_DIM}'>"
-                        f"{rng[0]:.0f}~{rng[1]:.0f} dB</span>"
+                        f"{rng[0]:.1f}~{rng[1]:.2f} dB</span>"
                     )
                     self._gain_label.setTextFormat(Qt.RichText)
                 self._gain.setValue(float(cam.get_gain_db()))
@@ -291,6 +315,31 @@ class ParamPanel(Card):
                         break
             except Exception as e:
                 logger.warning(f"读触发模式失败: {e}")
+
+            # 传感器模式: list_sensor_modes 返回非空才显示这一行
+            self._sensor_mode.blockSignals(True)
+            try:
+                modes = None
+                try:
+                    modes = cam.list_sensor_modes()
+                except Exception as e:
+                    logger.warning(f"读传感器模式列表失败: {e}")
+                if modes:
+                    self._sensor_mode.clear()
+                    self._sensor_mode.addItems(modes)
+                    try:
+                        cur = cam.get_sensor_mode()
+                        if cur and cur in modes:
+                            self._sensor_mode.setCurrentText(cur)
+                    except Exception as e:
+                        logger.warning(f"读当前传感器模式失败: {e}")
+                    self._sensor_mode_label.setVisible(True)
+                    self._sensor_mode.setVisible(True)
+                else:
+                    self._sensor_mode_label.setVisible(False)
+                    self._sensor_mode.setVisible(False)
+            finally:
+                self._sensor_mode.blockSignals(False)
         finally:
             for w in widgets:
                 w.blockSignals(False)
@@ -345,7 +394,36 @@ class ParamPanel(Card):
             self._camera.set_binning(value)
             self.binning_changed.emit(value)
         except Exception as e:
-            logger.warning(f"设置 Binning 失败: {e}")
+            logger.warning(f"设置 Binning 失败 (该型号可能不支持 Binning): {e}")
+            # 回滚到相机实际值
+            self._binning.blockSignals(True)
+            try:
+                self._binning.setValue(int(self._camera.get_binning()))
+            except Exception:
+                pass
+            finally:
+                self._binning.blockSignals(False)
+
+    def _push_sensor_mode(self, text: str) -> None:
+        if self._camera is None or not text:
+            return
+        try:
+            self._camera.set_sensor_mode(text)
+        except NotImplementedError:
+            pass
+        except Exception as e:
+            logger.warning(f"设置传感器模式失败: {e}")
+            # 回滚到相机实际状态
+            try:
+                actual = self._camera.get_sensor_mode()
+                if actual:
+                    self._sensor_mode.blockSignals(True)
+                    try:
+                        self._sensor_mode.setCurrentText(actual)
+                    finally:
+                        self._sensor_mode.blockSignals(False)
+            except Exception:
+                pass
 
     def _push_trigger_mode(self) -> None:
         if self._camera is None:
@@ -373,7 +451,10 @@ class ParamPanel(Card):
     # ── 其他 ──
 
     def _set_enabled(self, enabled: bool) -> None:
-        for w in (self._exposure, self._gain, self._pixel, self._fps, self._binning, self._trigger):
+        for w in (
+            self._exposure, self._gain, self._pixel, self._fps,
+            self._binning, self._trigger, self._sensor_mode,
+        ):
             w.setEnabled(enabled)
         # 预设: 保存/加载/删除只有连上相机且不在采集中才有意义
         for b in (self._preset_save_btn, self._preset_load_btn, self._preset_delete_btn):
