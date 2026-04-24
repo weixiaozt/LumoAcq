@@ -23,9 +23,13 @@ from acquire_app.gui.widgets.card import Card
 
 
 _STRETCH_LABELS = {
-    "auto_p2p98": "自动 p2–p98",
-    "auto_minmax": "自动 min–max",
-    "manual": "手动",
+    "raw": "原图",
+    "auto_minmax": "自动适应",
+}
+
+_STRETCH_TOOLTIPS = {
+    "raw": "按像素格式满量程固定映射 (Mono12 → 0..4095), 与 MVS 一致.\n增益/曝光变化会直接反映为画面亮暗.",
+    "auto_minmax": "把当前帧的最暗到最亮拉满显示, 便于看清暗处细节.\n注意: 会掩盖增益/曝光带来的真实亮度差异.",
 }
 
 
@@ -55,7 +59,7 @@ class PreviewPanel(Card):
         self.add_widget(self.image_view)
         self.add_widget(self._build_info_bar())
 
-        self._stretch_mode = "auto_p2p98"
+        self._stretch_mode = "raw"
         self._pixel_format = "Mono12"
         self._full_scale = full_scale_for(self._pixel_format)
         self._last_image: Optional[np.ndarray] = None
@@ -76,10 +80,16 @@ class PreviewPanel(Card):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
 
-        row.addWidget(QLabel("拉伸"))
+        row.addWidget(QLabel("显示"))
         self._stretch_combo = QComboBox()
         for key, label in _STRETCH_LABELS.items():
             self._stretch_combo.addItem(label, userData=key)
+            idx = self._stretch_combo.count() - 1
+            self._stretch_combo.setItemData(idx, _STRETCH_TOOLTIPS[key], Qt.ToolTipRole)
+        self._stretch_combo.setToolTip(
+            "原图: 像 MVS 一样固定按满量程显示, 亮暗真实 (推荐)\n"
+            "自动适应: 拉当前帧最暗~最亮到全屏, 看清细节但掩盖亮度变化"
+        )
         self._stretch_combo.currentIndexChanged.connect(self._on_stretch_changed)
         row.addWidget(self._stretch_combo)
 
@@ -168,7 +178,10 @@ class PreviewPanel(Card):
             self._full_scale = full_scale_for(fmt)
             self._pixel_format = fmt
         except ValueError:
-            pass
+            return
+        # raw 模式下满量程是映射上限, 像素格式变了要立即刷新
+        if self._stretch_mode == "raw" and self._last_image is not None:
+            self.set_frame(self._last_image)
 
     def set_frame(self, image: np.ndarray) -> None:
         """主线程接收的帧更新, 由 MainWindow 转发 worker 的 frame_ready 信号。"""
@@ -225,21 +238,15 @@ class PreviewPanel(Card):
 
     # ── 拉伸 ──
 
-    def _compute_levels(self, image: np.ndarray) -> tuple[float, float] | None:
-        mode = self._stretch_mode
-        if mode == "manual":
-            return None   # 使用直方图滑块当前值
-        arr = image
-        if mode == "auto_minmax":
-            lo = float(arr.min())
-            hi = float(arr.max())
-        else:  # auto_p2p98
-            lo, hi = np.percentile(arr, [2.0, 98.0])
-            lo = float(lo)
-            hi = float(hi)
-        if hi <= lo:
-            hi = lo + 1.0
-        return (lo, hi)
+    def _compute_levels(self, image: np.ndarray) -> tuple[float, float]:
+        if self._stretch_mode == "auto_minmax":
+            lo = float(image.min())
+            hi = float(image.max())
+            if hi <= lo:
+                hi = lo + 1.0
+            return (lo, hi)
+        # raw: 按像素格式满量程固定映射, 与 MVS 行为一致
+        return (0.0, float(self._full_scale))
 
     def _on_stretch_changed(self) -> None:
         data = self._stretch_combo.currentData()
