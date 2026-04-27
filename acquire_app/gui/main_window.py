@@ -130,6 +130,8 @@ class MainWindow(QMainWindow):
         self.camera_disconnected.connect(self._stop_preview)
 
         self._param_panel.pixel_format_changed.connect(self._preview.set_pixel_format)
+        self._param_panel.preset_load_started.connect(self._on_preset_load_started)
+        self._param_panel.preset_load_finished.connect(self._on_preset_load_finished)
 
         self.camera_ready.connect(lambda _: self._capture_panel.set_camera_connected(True))
         self.camera_disconnected.connect(lambda: self._capture_panel.set_camera_connected(False))
@@ -286,6 +288,15 @@ class MainWindow(QMainWindow):
         logger.warning(f"预览错误: {msg}")
         self._status_msg.setText(f"预览错误: {msg}")
         self._status_dot.set_state("error")
+
+    def _on_preset_load_started(self) -> None:
+        """加载预设期间暂停预览, 避免 stop+start_stream 打断预览 grab。"""
+        if self._preview_worker is not None:
+            self._preview_worker.pause()
+
+    def _on_preset_load_finished(self) -> None:
+        if self._preview_worker is not None:
+            self._preview_worker.resume()
 
     # ── 采集 ──
 

@@ -78,6 +78,8 @@ class ParamPanel(Card):
     pixel_format_changed = Signal(str)   # 供预览/采集协调用 (可能需要重建累加器)
     binning_changed = Signal(int)
     trigger_mode_changed = Signal(str)   # "free" | "software" | "hardware"
+    preset_load_started = Signal()       # 加载预设前: 请求 main_window 暂停预览
+    preset_load_finished = Signal()      # 加载完成: 请求恢复预览
 
     def __init__(self, parent=None):
         super().__init__("采集参数", subtitle="M6", parent=parent)
@@ -499,7 +501,14 @@ class ParamPanel(Card):
         data = self._preset_combo.currentData()
         if not isinstance(data, CameraPreset):
             return
-        errors = apply_preset(data, self._camera)
+        # 暂停预览, 避免 PixelFormat/Binning 内部 stop_stream 打断 grab
+        # (daheng SDK 限制: 这两个参数必须 stop+set+start, 同时预览的 1s grab
+        # 会被打断抛 TLError: Wait terminated)
+        self.preset_load_started.emit()
+        try:
+            errors = apply_preset(data, self._camera)
+        finally:
+            self.preset_load_finished.emit()
         self._pull_from_camera()
         if errors:
             QMessageBox.warning(
