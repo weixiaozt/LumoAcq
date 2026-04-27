@@ -31,6 +31,8 @@ from acquire_app.core.lockin_worker import LockInRequest, LockInWorker
 from acquire_app.core.preview_worker import PreviewWorker
 from acquire_app.core.calibration_worker import CalibrationRequest, CalibrationWorker
 from acquire_app.gui.dialogs.lockin_monitor import LockInMonitorDialog
+from acquire_app.gui.dialogs.average_monitor import AverageMonitorDialog
+from acquire_app.gui.dialogs.grouped_average_monitor import GroupedAverageMonitorDialog
 from acquire_app.gui.dialogs.calibration_dialog import CalibrationDialog
 from acquire_app.gui import theme
 from acquire_app.gui.widgets.log_panel import LogPanel, QtLogHandler
@@ -64,6 +66,8 @@ class MainWindow(QMainWindow):
         self._lockin_thread: Optional[QThread] = None
         self._lockin_worker: Optional[LockInWorker] = None
         self._lockin_monitor: Optional[LockInMonitorDialog] = None
+        self._average_monitor: Optional[AverageMonitorDialog] = None
+        self._grouped_avg_monitor: Optional[GroupedAverageMonitorDialog] = None
         self._grouped_avg_thread: Optional[QThread] = None
         self._grouped_avg_worker: Optional[GroupedAverageWorker] = None
         self._calib_thread: Optional[QThread] = None
@@ -328,11 +332,22 @@ class MainWindow(QMainWindow):
             apply_flat=self._calib_panel.apply_flat(),
         )
 
+        # N 帧平均开监视窗 (单帧瞬间完成, 不开)
+        monitor: Optional[AverageMonitorDialog] = None
+        if payload["mode"] == "A" and payload["n_frames"] > 1:
+            monitor = AverageMonitorDialog(
+                total_frames=payload["n_frames"], parent=self,
+            )
+            monitor.show()
+            self._average_monitor = monitor
+
         thread = QThread(self)
         worker = CaptureWorker(request)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._capture_panel.set_progress)
+        if monitor is not None:
+            worker.frame_captured.connect(monitor.on_frame)
         worker.finished.connect(self._on_capture_finished)
         worker.failed.connect(self._on_capture_failed)
         worker.finished.connect(thread.quit)
@@ -612,6 +627,13 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
 
+        if self._average_monitor is not None:
+            try:
+                self._average_monitor.mark_done("采集结束 — 可关闭此窗口")
+            except RuntimeError:
+                pass
+            self._average_monitor = None   # 非模态, 留给用户自行关
+
         self._param_panel.set_locked(False)
         self._connection_panel.set_locked(False)
         self._capture_panel.set_busy(False)
@@ -660,11 +682,19 @@ class MainWindow(QMainWindow):
             owns_stream=False,
         )
 
+        # 监视窗: 实时帧 + 波形 + 亮/暗结果切换
+        monitor = GroupedAverageMonitorDialog(total_frames=total, parent=self)
+        monitor.show()
+        self._grouped_avg_monitor = monitor
+
         thread = QThread(self)
         worker = GroupedAverageWorker(request)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._capture_panel.set_progress)
+        worker.frame_captured.connect(monitor.update_frame)
+        worker.means_updated.connect(monitor.update_waveform)
+        worker.result_ready.connect(monitor.show_result)
         worker.finished.connect(self._on_grouped_average_finished)
         worker.failed.connect(self._on_grouped_average_failed)
         worker.finished.connect(thread.quit)
@@ -748,6 +778,13 @@ class MainWindow(QMainWindow):
                 worker.deleteLater()
             except RuntimeError:
                 pass
+
+        if self._grouped_avg_monitor is not None:
+            try:
+                self._grouped_avg_monitor.mark_done("采集结束 — 可关闭此窗口")
+            except RuntimeError:
+                pass
+            self._grouped_avg_monitor = None   # 非模态, 留给用户自行关
 
         self._param_panel.set_locked(False)
         self._connection_panel.set_locked(False)

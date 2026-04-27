@@ -51,7 +51,10 @@ class GroupedAverageRequest:
 
 class GroupedAverageWorker(QObject):
     started = Signal()
-    progress = Signal(int, int)                      # current, total
+    progress = Signal(int, int)                       # current, total
+    frame_captured = Signal(np.ndarray, int)          # image, frame_index
+    means_updated = Signal(list, list)                # frame_means, is_bright (采集中 is_bright 全 None)
+    result_ready = Signal(np.ndarray, np.ndarray)     # bright_image, dark_image (落盘前)
     finished = Signal(dict)                           # {bright: {...}, dark: {...}, stats: {...}}
     failed = Signal(str)
 
@@ -93,6 +96,9 @@ class GroupedAverageWorker(QObject):
             logger.exception("分组平均采集异常")
             self.failed.emit(f"采集异常: {e}")
             return
+
+        # 落盘前推给 UI, 让监视窗立刻能切换到亮/暗结果图
+        self.result_ready.emit(bright_img, dark_img)
 
         end_ts = datetime.now()
 
@@ -154,12 +160,23 @@ class GroupedAverageWorker(QObject):
                 prev_id = frame.frame_id
 
                 averager.add(frame.image)
+                # 推给监视窗: 实时帧
+                self.frame_captured.emit(frame.image, i)
+                # 每 2 帧推一次帧均值曲线 (此时 is_bright 全 None, UI 端单色散点)
+                if (i + 1) % 2 == 0:
+                    self.means_updated.emit(
+                        list(averager.frame_means), list(averager.is_bright)
+                    )
                 self.progress.emit(i + 1, r.total_frames)
 
             # 触发分类, 然后取两张分组平均图
             bright = averager.bright_image()
             dark = averager.dark_image()
             diag = averager.diagnostics()
+            # 分类完成后再推一次, 让监视窗散点着色 (亮/暗/过渡)
+            self.means_updated.emit(
+                list(averager.frame_means), list(averager.is_bright)
+            )
             return bright, dark, diag
         finally:
             if r.owns_stream:
